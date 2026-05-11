@@ -1,0 +1,55 @@
+{
+  "app": "<3Eevee's Koth Calculator<3",
+  "version": 3,
+  "saved_at": "2025-12-26T00:18:01.858142+00:00",
+  "selected_player": "Player 1",
+  "celebration_enabled": false,
+  "celebration_monitor": 0,
+  "celebration_seconds": 5.0,
+  "bg_sync_enabled": false,
+  "bg_sync_layout_path": "",
+  "bg_sync_monitor": 0,
+  "bg_sync_top1_layer_id": 0,
+  "bg_sync_top2_layer_id": 0,
+  "bg_sync_top3_layer_id": 0,
+  "players": {
+    "Player 1": {
+      "current_total": 0,
+      "best_pack_total": 12,
+      "best_pack_at": "2025-12-24T02:59:24.036640+00:00",
+      "additions": [],
+      "packs": [
+        {
+          "pack_no": 1,
+          "total": 5,
+          "ended_at": "2025-12-24T02:20:07.725054+00:00"
+        },
+        {
+          "pack_no": 2,
+          "total": 7,
+          "ended_at": "2025-12-24T02:20:07.728626+00:00"
+        },
+        {
+          "pack_no": 3,
+          "total": 5,
+          "ended_at": "2025-12-24T02:59:24.034639+00:00"
+        },
+        {
+          "pack_no": 4,
+          "total": 12,
+          "ended_at": "2025-12-24T02:59:24.039640+00:00"
+        },
+        {
+          "pack_no": 5,
+          "total": 5,
+          "ended_at": "2025-12-24T03:23:06.663133+00:00"
+        },
+        {
+          "pack_no": 6,
+          "total": 7,
+          "ended_at": "2025-12-24T03:23:06.668132+00:00"
+        }
+      ]
+    }
+  }
+}

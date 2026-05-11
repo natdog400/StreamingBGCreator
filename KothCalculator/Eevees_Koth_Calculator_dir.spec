@@ -1,0 +1,67 @@
+# -*- mode: python ; coding: utf-8 -*-
+
+
+a = Analysis(
+    ['koth_calculator.py'],
+    pathex=[],
+    binaries=[],
+    datas=[('eeveelutions.gif', '.'), ('eevee.ico', '.')],
+    hiddenimports=[
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageOps',
+        'PIL.ImageSequence',
+        'PIL.ImageTk',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'altair',
+        'cv2',
+        'matplotlib',
+        'numpy',
+        'onnx',
+        'pandas',
+        'pygame',
+        'scipy',
+        'sklearn',
+        'speech_recognition',
+        'sympy',
+        'tensorflow',
+        'torch',
+        'torchvision',
+        'transformers',
+    ],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='Eevees_Koth_Calculator_dir',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=['eevee.ico'],
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='Eevees_Koth_Calculator_dir',
+)

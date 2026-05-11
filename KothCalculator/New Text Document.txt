@@ -1,0 +1,4 @@
+needs to be able to track every pack opened
+needs to be able to sort players in list
+the 1st place info at top right needs to show the best pack out of every player in the KOTH
+need to get listening to capture numbers said faster and only want it to trigger add when a number is said and i only want it to listen for the trigger words for commands nothing else
