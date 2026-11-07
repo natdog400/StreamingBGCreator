@@ -4546,7 +4546,9 @@ class MainWindow(QMainWindow):
             state.order.remove(gid)
         self._stop_media_for_item(item)
         try:
-            self._current_scene().removeItem(item)
+            scene = self._current_scene()
+            if item.scene() is scene:
+                scene.removeItem(item)
         except Exception:
             pass
         self._rebuild_layers_list()
@@ -5153,7 +5155,8 @@ class MainWindow(QMainWindow):
         for item in list(state.items.values()):
             self._stop_media_for_item(item)
             try:
-                scene.removeItem(item)
+                if item.scene() is scene:
+                    scene.removeItem(item)
             except Exception:
                 pass
         state.items = {}

@@ -164,6 +164,25 @@ class GuiSmokeTest(unittest.TestCase):
         self.assertEqual(state.kind, "color")
         self.assertEqual(QColor(str(state.color)).name(), "#0a0b0c")
 
+    def test_clearing_layout_does_not_warn(self) -> None:
+        """Removing a layer that is not attached to the scene must not warn."""
+        from PySide6.QtCore import qInstallMessageHandler
+
+        messages: list[str] = []
+        previous = qInstallMessageHandler(lambda mode, ctx, msg: messages.append(msg))
+        try:
+            scene = self.window._current_scene()
+            attached = scene.add_text_layer()
+            self.window._add_layer_item(attached, "Attached layer")
+            detached = TextLayerItem("Detached", 99)
+            self.window._add_layer_item(detached, "Detached layer")
+            self.window._clear_monitor_layout(0)
+            self.window._clear_monitor_layout(0)
+        finally:
+            qInstallMessageHandler(previous)
+        bad = [m for m in messages if "removeItem" in m]
+        self.assertEqual(bad, [], f"Qt emitted removeItem warnings: {bad}")
+
 
 if __name__ == "__main__":
     unittest.main()
