@@ -1,11 +1,12 @@
 # 🎨 Background Creator
 
-A powerful, feature-rich desktop application for creating animated wallpapers and dynamic backgrounds with layers, visual effects, particle systems, and real-time preview. Built with PySide6 (Qt6) for cross-platform compatibility.
+A powerful, feature-rich desktop application for creating animated wallpapers and dynamic backgrounds with layers, visual effects, particle systems, and real-time preview. Built with PySide6 (Qt6); the editor runs on Windows, macOS and Linux, while embedding a live window behind the desktop icons (live wallpaper mode) is Windows-only.
 
 ## ✨ Features
 
 ### 🖼️ Layer System
 - **Multi-layer support** with drag-and-drop interface
+- **Solid colour backgrounds** - Set a flat background colour with File → Background Color…
 - **Layer types:**
   - **Image Layers** - Static images with visual effects
   - **Video Layers** - Animated video backgrounds
@@ -21,6 +22,7 @@ A powerful, feature-rich desktop application for creating animated wallpapers an
 - **Blur Effects** - Adjustable blur radius
 - **Shadow Effects** - Customizable offset, blur, and color
 - **Glow Effects** - Radiant glow with color control
+- **Colorize** - Duotone tint with adjustable strength and colour
 - **Real-time preview** - See effects applied instantly
 - **Layer-specific effects** - Apply different effects to each layer
 
@@ -67,7 +69,8 @@ A powerful, feature-rich desktop application for creating animated wallpapers an
   - Real-time animation preview
 
 ### 🖥️ Desktop Integration
-- **Live wallpaper mode** - Apply creations as desktop wallpaper
+- **Live wallpaper mode (Windows)** - Apply creations as desktop wallpaper
+- **Frame-rate cap** - Choose 15/24/30/60 FPS; hidden editor tabs pause and resume instantly
 - **Multi-monitor support** - Handle multiple displays
 - **Taskbar avoidance** - Smart positioning to avoid taskbar
 - **Screen resolution detection** - Automatic sizing
@@ -77,8 +80,10 @@ A powerful, feature-rich desktop application for creating animated wallpapers an
 - **Save/Load projects** - JSON-based project files
 - **Layout system** - Save and reuse layouts
 - **Undo/Redo** - Full history support
-- **Export functionality** - Export creations for sharing
-- **Recent files** - Quick access to recent projects
+- **Export options** - Save layouts, export packaged layouts with their assets, or export the current frame as PNG/JPEG
+- **Layout cycling** - Store several layouts per monitor and auto-cycle them on a timer
+- **Autosave and recovery** - The current layout is autosaved every minute and can be restored from File → Recover Autosave
+- **Recent layouts** - File → Open Recent keeps the last 8 layouts
 
 ### 🎨 User Interface
 - **Modern, intuitive interface** with:
@@ -88,6 +93,7 @@ A powerful, feature-rich desktop application for creating animated wallpapers an
   - **Real-time preview** - See changes instantly
   - **Drag-and-drop** - Intuitive file handling
   - **Keyboard shortcuts** - Efficient workflow
+- **Canvas zoom and pan** - Ctrl+= / Ctrl+- / Ctrl+0 to zoom, middle-mouse drag to pan, mouse wheel zooms when nothing is selected
 
 ## 🚀 Installation
 
@@ -122,6 +128,17 @@ pip install -r requirements.txt
 # Run application
 python main.py
 ```
+
+### Running the tests
+```bash
+python -m unittest discover -s tests
+```
+
+The suite has two parts: layout save/load round-tripping plus the per-OS application data
+directory (no GUI needed), and a GUI smoke test that builds the real main window and
+exercises background colours, layer effects, save/load, frame export, the frame-rate cap
+and canvas zoom. The GUI test skips itself automatically when PySide6 or a Qt platform
+plugin is unavailable; set `QT_QPA_PLATFORM=offscreen` to run it headlessly.
 
 ## 🎯 Usage Guide
 
@@ -210,12 +227,13 @@ python main.py
 
 #### Loading Projects
 - **File → Open Project** (Ctrl+O)
-- **Recent files** in File menu
+- **Layouts dock** for saved layouts, renaming and auto-cycling
 - **Drag & drop** project files onto application
 
 #### Exporting
-- **Export as Image** - Save current frame
-- **Export as Video** - Record animation (if implemented)
+- **Export Frame as Image** - Save the current frame as PNG or JPEG (File → Export Frame as Image…)
+- **Export Packaged Layout** - Copy the layout and every asset it references into a shareable folder
+- **Export as Video** - Not implemented yet
 - **Export Layout** - Save layer arrangement
 
 ## 🛠️ Technical Architecture
@@ -327,6 +345,10 @@ Common keyboard shortcuts:
 - **Ctrl+Y** - Redo
 - **Delete** - Delete selected items
 - **Ctrl+D** - Duplicate selected items
+- **Ctrl+= / Ctrl+- / Ctrl+0** - Zoom in / zoom out / reset zoom
+- **Middle-mouse drag** - Pan the canvas
+- **Ctrl+wheel / wheel** - Rotate / scale the selected layer
+- **Alt+Left / Alt+Right** - Previous / next layout
 
 ### Configuration
 Settings are stored in the application data directory. You can modify preferences for:

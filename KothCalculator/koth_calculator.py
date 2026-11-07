@@ -2673,7 +2673,7 @@ def _run_gui(state_path: str) -> int:
         if not picked:
             return
         st.bg_sync_layout_path = str(picked)
-        bg_sync_layout_path_var.set(str(picked))
+        bg_sync_layout_name_var.set(str(picked))
         persist()
         _refresh_bg_sync_layout_info()
         _reset_bg_sync_snapshot_and_sync()

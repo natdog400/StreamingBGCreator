@@ -202,7 +202,7 @@ def main() -> int:
     socket = QLocalSocket()
     socket.connectToServer(SERVER_NAME)
     if socket.waitForConnected(150):
-        socket.write(b"activate_reset\n")
+        socket.write(b"activate\n")
         socket.flush()
         socket.waitForBytesWritten(150)
         socket.disconnectFromServer()
@@ -212,6 +212,12 @@ def main() -> int:
     window.show()
 
     server = QLocalServer()
+    try:
+        # A previous crash can leave a stale socket behind, which would stop this
+        # instance from accepting activation requests.
+        QLocalServer.removeServer(SERVER_NAME)
+    except Exception:
+        pass
     server.listen(SERVER_NAME)
 
     def on_new_connection() -> None:

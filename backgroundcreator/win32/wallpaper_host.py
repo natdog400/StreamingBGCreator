@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 from ctypes import wintypes
 
-
-user32 = ctypes.WinDLL("user32", use_last_error=True)
+_IS_WINDOWS = sys.platform == "win32"
 
 ULONG_PTR = ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_uint32
 LRESULT = ctypes.c_ssize_t
@@ -24,51 +24,68 @@ SWP_NOMOVE = 0x0002
 SMTO_NORMAL = 0x0000
 
 
-EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+# The Win32 entry points only exist on Windows. Importing this module on any other
+# platform must stay harmless so the rest of the application can still start.
+user32 = None
+EnumWindowsProc = None
+
+if _IS_WINDOWS:
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+
+        user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowExW.restype = wintypes.HWND
+
+        user32.SendMessageTimeoutW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+            wintypes.UINT,
+            wintypes.UINT,
+            ctypes.POINTER(ULONG_PTR),
+        ]
+        user32.SendMessageTimeoutW.restype = LRESULT
+
+        user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+
+        user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
+        user32.SetParent.restype = wintypes.HWND
+
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = ctypes.c_long
+
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        user32.SetWindowLongW.restype = ctypes.c_long
+
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+    except Exception:
+        user32 = None
+        EnumWindowsProc = None
 
 
-user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-user32.FindWindowW.restype = wintypes.HWND
-
-user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
-user32.FindWindowExW.restype = wintypes.HWND
-
-user32.SendMessageTimeoutW.argtypes = [
-    wintypes.HWND,
-    wintypes.UINT,
-    wintypes.WPARAM,
-    wintypes.LPARAM,
-    wintypes.UINT,
-    wintypes.UINT,
-    ctypes.POINTER(ULONG_PTR),
-]
-user32.SendMessageTimeoutW.restype = LRESULT
-
-user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
-user32.EnumWindows.restype = wintypes.BOOL
-
-user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
-user32.SetParent.restype = wintypes.HWND
-
-user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-user32.GetWindowLongW.restype = ctypes.c_long
-
-user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
-user32.SetWindowLongW.restype = ctypes.c_long
-
-user32.SetWindowPos.argtypes = [
-    wintypes.HWND,
-    wintypes.HWND,
-    ctypes.c_int,
-    ctypes.c_int,
-    ctypes.c_int,
-    ctypes.c_int,
-    ctypes.c_uint,
-]
-user32.SetWindowPos.restype = wintypes.BOOL
+def wallpaper_supported() -> bool:
+    """True when this platform can host a window behind the desktop icons."""
+    return bool(user32 is not None)
 
 
 def _spawn_workerw() -> None:
+    if not wallpaper_supported():
+        return
     progman = user32.FindWindowW("Progman", None)
     if not progman:
         return
@@ -78,6 +95,9 @@ def _spawn_workerw() -> None:
 
 
 def _find_workerw() -> int | None:
+    if not wallpaper_supported():
+        return None
+
     target: int | None = None
 
     def enum_proc(hwnd: int, _lparam: int) -> bool:
@@ -95,6 +115,9 @@ def _find_workerw() -> int | None:
 
 
 def attach_window_to_desktop(hwnd: int, x: int = 0, y: int = 0, width: int | None = None, height: int | None = None) -> bool:
+    if not wallpaper_supported():
+        return False
+
     _spawn_workerw()
     workerw = _find_workerw()
     if not workerw:

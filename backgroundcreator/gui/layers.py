@@ -407,6 +407,20 @@ class ImageLayerItem(QGraphicsPixmapItem):
                 self.setGraphicsEffect(eff)
             else:
                 self.setGraphicsEffect(None)
+        elif name == "colorize":
+            eff = QGraphicsColorizeEffect()
+            try:
+                eff.setStrength(max(0.0, min(1.0, float(params.get("strength", 0.6)))))
+            except Exception:
+                eff.setStrength(0.6)
+            c = params.get("color")
+            if isinstance(c, QColor) and c.isValid():
+                eff.setColor(c)
+            elif isinstance(c, str):
+                parsed = QColor(c)
+                if parsed.isValid():
+                    eff.setColor(parsed)
+            self.setGraphicsEffect(eff)
         else:
             self.setGraphicsEffect(None)
 
@@ -462,6 +476,20 @@ class VideoLayerItem(QGraphicsVideoItem):
                 self.setGraphicsEffect(eff)
             else:
                 self.setGraphicsEffect(None)
+        elif name == "colorize":
+            eff = QGraphicsColorizeEffect()
+            try:
+                eff.setStrength(max(0.0, min(1.0, float(params.get("strength", 0.6)))))
+            except Exception:
+                eff.setStrength(0.6)
+            c = params.get("color")
+            if isinstance(c, QColor) and c.isValid():
+                eff.setColor(c)
+            elif isinstance(c, str):
+                parsed = QColor(c)
+                if parsed.isValid():
+                    eff.setColor(parsed)
+            self.setGraphicsEffect(eff)
         else:
             self.setGraphicsEffect(None)
 
@@ -548,11 +576,26 @@ class ParticleLayerItem(QGraphicsItem):
                 self.setGraphicsEffect(eff)
             else:
                 self.setGraphicsEffect(None)
+        elif name == "colorize":
+            eff = QGraphicsColorizeEffect()
+            try:
+                eff.setStrength(max(0.0, min(1.0, float(params.get("strength", 0.6)))))
+            except Exception:
+                eff.setStrength(0.6)
+            c = params.get("color")
+            if isinstance(c, QColor) and c.isValid():
+                eff.setColor(c)
+            elif isinstance(c, str):
+                parsed = QColor(c)
+                if parsed.isValid():
+                    eff.setColor(parsed)
+            self.setGraphicsEffect(eff)
         else:
             self.setGraphicsEffect(None)
 
     def boundingRect(self) -> QRectF:
         return QRectF(0, 0, self._width, self._height)
+
         
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.save()
@@ -571,31 +614,56 @@ class ParticleLayerItem(QGraphicsItem):
         painter.restore()
         
     def advance_time(self, dt: float) -> None:
-        # Spawn
-        spawn_rate = self.count / self.lifetime
-        amount_to_spawn = spawn_rate * dt
-        self._spawn_timer += amount_to_spawn
-        
-        while self._spawn_timer >= 1.0:
+        # A long stall (minimised window, slow frame) must not spawn thousands of
+        # particles in a single tick.
+        step = max(0.0, min(float(dt), 0.1))
+        if step <= 0.0:
+            return
+
+        lifetime = max(1e-3, float(self.lifetime))
+        spawn_rate = max(0.0, float(self.count)) / lifetime
+        self._spawn_timer += spawn_rate * step
+
+        spawn_budget = max(1, int(max(1.0, float(self.count)) * 2))
+        spawned = 0
+        while self._spawn_timer >= 1.0 and spawned < spawn_budget:
             self._spawn_timer -= 1.0
             self._spawn_particle()
-            
-        # Update
-        dead = []
+            spawned += 1
+        if self._spawn_timer > 1.0:
+            self._spawn_timer = 0.0
+
+        # Filtering into a fresh list is O(n); repeatedly calling list.remove() is
+        # O(n^2) and made large particle counts stall the UI thread.
+        alive: list[Particle] = []
         for p in self._particles:
-            p.life -= dt
-            if p.life <= 0:
-                dead.append(p)
+            p.life -= step
+            if p.life <= 0.0:
                 continue
-                
-            p.vx += self.gravity_x * dt
-            p.vy += self.gravity_y * dt
-            p.x += p.vx * dt
-            p.y += p.vy * dt
-            
-        for p in dead:
-            self._particles.remove(p)
-            
+            p.vx += self.gravity_x * step
+            p.vy += self.gravity_y * step
+            p.x += p.vx * step
+            p.y += p.vy * step
+            alive.append(p)
+
+        max_alive = max(1, int(max(1.0, float(self.count)) * 3))
+        if len(alive) > max_alive:
+            alive = alive[-max_alive:]
+        self._particles = alive
+
+        self.update()
+
+    def set_bounds(self, width: float, height: float) -> None:
+        try:
+            w = max(1.0, float(width))
+            h = max(1.0, float(height))
+        except Exception:
+            return
+        if abs(w - float(self._width)) < 0.5 and abs(h - float(self._height)) < 0.5:
+            return
+        self.prepareGeometryChange()
+        self._width = w
+        self._height = h
         self.update()
         
     def _spawn_particle(self):

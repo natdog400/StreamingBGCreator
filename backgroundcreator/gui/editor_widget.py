@@ -34,13 +34,18 @@ class EditorView(QGraphicsView):
         self._wheel_timer = QTimer(self)
         self._wheel_timer.setSingleShot(True)
         self._wheel_timer.timeout.connect(self._commit_wheel_transform)
+        self._fit_mode = True
+        self._pan_active = False
+        self._pan_last = None
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        self.fitInView(self.sceneRect(), self._aspect_mode)
+        if self._fit_mode:
+            self.fitInView(self.sceneRect(), self._aspect_mode)
 
     def set_keep_aspect(self, keep_aspect: bool) -> None:
         self._aspect_mode = Qt.KeepAspectRatio if keep_aspect else Qt.IgnoreAspectRatio
+        self._fit_mode = True
         self.fitInView(self.sceneRect(), self._aspect_mode)
 
     def set_grid_visible(self, visible: bool) -> None:
@@ -200,6 +205,55 @@ class EditorView(QGraphicsView):
             y += spacing_y
         painter.restore()
 
+    def zoom_in(self) -> None:
+        self._apply_view_zoom(1.25)
+
+    def zoom_out(self) -> None:
+        self._apply_view_zoom(1.0 / 1.25)
+
+    def _apply_view_zoom(self, factor: float) -> None:
+        try:
+            self._fit_mode = False
+            self.scale(float(factor), float(factor))
+        except Exception:
+            pass
+
+    def zoom_reset(self) -> None:
+        self._fit_mode = True
+        self.fitInView(self.sceneRect(), self._aspect_mode)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._pan_active = True
+            self._pan_last = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._pan_active and self._pan_last is not None:
+            delta = event.position() - self._pan_last
+            self._pan_last = event.position()
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - int(delta.x())
+            )
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - int(delta.y())
+            )
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton and self._pan_active:
+            self._pan_active = False
+            self._pan_last = None
+            self.unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def _commit_wheel_transform(self) -> None:
         item = self._wheel_item
         before = self._wheel_before
@@ -244,6 +298,11 @@ class EditorView(QGraphicsView):
             item.setScale(max(0.05, item.scale() * factor))
             event.accept()
             self._wheel_timer.start(250)
+            return
+        delta = event.angleDelta().y()
+        if delta:
+            self._apply_view_zoom(1.1 if delta > 0 else 1.0 / 1.1)
+            event.accept()
             return
         super().wheelEvent(event)
 

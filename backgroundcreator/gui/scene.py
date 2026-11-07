@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import math
-import os
 import random
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QObject, QRectF, Signal, QSizeF, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QMovie, QPainterPath, QPen, QPixmap, QTransform
+from PySide6.QtCore import QPointF, QRectF, Signal, QSizeF, Qt, QTimer, QUrl
+from PySide6.QtGui import QBrush, QColor, QMovie, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsPathItem, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QMessageBox
@@ -27,6 +26,7 @@ ITEM_DATA_ANIM_PAYLOAD = 0xBC21
 class BackgroundState:
     path: Path | None
     kind: str | None
+    color: str | None = None
 
 
 class EditorScene(QGraphicsScene):
@@ -74,8 +74,10 @@ class EditorScene(QGraphicsScene):
         self._anim_timer.setInterval(33)
         self._anim_timer.timeout.connect(self._on_anim_tick)
         self._anim_last = time.monotonic()
+        self._render_active = True
+        self._fps_cap = 30
         self.selectionChanged.connect(self.selection_changed)
-        self.sceneRectChanged.connect(lambda _r: self._resize_background_to_scene())
+        self.sceneRectChanged.connect(self._on_scene_rect_changed)
 
     def configure_virtual_desktop(
         self,
@@ -269,7 +271,27 @@ class EditorScene(QGraphicsScene):
         self._background_movie = None
         self._background_player = None
         self._background_audio = None
+        try:
+            self.setBackgroundBrush(QBrush(Qt.BrushStyle.NoBrush))
+        except Exception:
+            pass
         self._background_state = BackgroundState(path=None, kind=None)
+        self.background_changed.emit(self._background_state)
+
+    def set_background_color(self, color: QColor) -> None:
+        """Use a flat colour (or the colour part of a gradient) as the background."""
+        if not isinstance(color, QColor) or not color.isValid():
+            return
+        self.clear_background()
+        try:
+            self.setBackgroundBrush(QBrush(color))
+        except Exception:
+            return
+        self._background_state = BackgroundState(
+            path=None,
+            kind="color",
+            color=color.name(QColor.NameFormat.HexArgb),
+        )
         self.background_changed.emit(self._background_state)
 
     def set_desktop_preview(self, enabled: bool, screen_rect: QRectF | None = None, work_rect: QRectF | None = None) -> None:
@@ -448,10 +470,6 @@ class EditorScene(QGraphicsScene):
                 return
 
             url = QUrl.fromLocalFile(str(abs_path))
-            print(f"DEBUG: Loading video background from: {abs_path}", file=sys.stderr, flush=True)
-            print(f"DEBUG: URL: {url.toString()}", file=sys.stderr, flush=True)
-            print(f"DEBUG: Encoded URL: {url.toEncoded()}", file=sys.stderr, flush=True)
-            print(f"DEBUG: URL Valid: {url.isValid()}", file=sys.stderr, flush=True)
 
             video_item = QGraphicsVideoItem()
             video_item.setZValue(-10_000)
@@ -570,13 +588,41 @@ class EditorScene(QGraphicsScene):
                     break
         except Exception:
             any_anim = False
-        if any_anim:
+        if any_anim and self._render_active:
             if not self._anim_timer.isActive():
                 self._anim_last = time.monotonic()
                 self._anim_timer.start()
         else:
             if self._anim_timer.isActive():
                 self._anim_timer.stop()
+
+    def set_render_active(self, active: bool) -> None:
+        """Pause/resume the animation tick without losing animation state."""
+        active = bool(active)
+        if bool(self._render_active) == active:
+            return
+        self._render_active = active
+        if active:
+            self._anim_last = time.monotonic()
+            self.refresh_animation()
+        else:
+            if self._anim_timer.isActive():
+                self._anim_timer.stop()
+
+    def render_active(self) -> bool:
+        return bool(self._render_active)
+
+    def set_fps_cap(self, fps: int) -> None:
+        try:
+            value = int(fps)
+        except Exception:
+            value = 30
+        value = max(1, min(240, value))
+        self._fps_cap = value
+        self._anim_timer.setInterval(max(1, int(round(1000.0 / float(value)))))
+
+    def fps_cap(self) -> int:
+        return int(self._fps_cap)
 
     def _on_anim_tick(self) -> None:
         now = time.monotonic()
@@ -2164,8 +2210,6 @@ class EditorScene(QGraphicsScene):
         
         abs_path = Path(file_path).resolve()
         url = QUrl.fromLocalFile(str(abs_path))
-        print(f"DEBUG: Adding video layer from: {abs_path}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Layer URL: {url.toString()}", file=sys.stderr, flush=True)
         
         def on_error():
             err_str = player.errorString()
@@ -2353,6 +2397,19 @@ class EditorScene(QGraphicsScene):
         item.setTransform(QTransform.fromScale(sx, sy))
         item.setTransformOriginPoint(0, 0)
         item.setPos(rect.left() - (bleed / 2.0), rect.top() - (bleed / 2.0))
+
+    def _on_scene_rect_changed(self, _rect: QRectF) -> None:
+        self._resize_background_to_scene()
+        self._resize_particle_layers_to_scene()
+
+    def _resize_particle_layers_to_scene(self) -> None:
+        rect = self.sceneRect()
+        for it in self.items():
+            if isinstance(it, ParticleLayerItem):
+                try:
+                    it.set_bounds(rect.width(), rect.height())
+                except Exception:
+                    pass
 
     def _resize_background_to_scene(self) -> None:
         if self._background_item is None:

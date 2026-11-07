@@ -6,11 +6,14 @@ from pathlib import Path
 
 
 def app_data_dir() -> Path:
-    base = os.environ.get("APPDATA")
-    if base:
-        root = Path(base)
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA")
+        root = Path(base) if base else (Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
     else:
-        root = Path.home() / "AppData" / "Roaming"
+        base = os.environ.get("XDG_DATA_HOME")
+        root = Path(base) if base else (Path.home() / ".local" / "share")
 
     directory = root / "BackgroundCreator"
     directory.mkdir(parents=True, exist_ok=True)

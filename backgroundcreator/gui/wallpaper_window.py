@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout
 
 from backgroundcreator.gui.editor_widget import EditorView
 from backgroundcreator.gui.scene import EditorScene
-from backgroundcreator.win32.wallpaper_host import attach_window_to_desktop
+from backgroundcreator.win32.wallpaper_host import attach_window_to_desktop, wallpaper_supported
 
 
 class WallpaperWindow(QWidget):
@@ -31,9 +31,11 @@ class WallpaperWindow(QWidget):
         self.setLayout(layout)
 
         self.setWindowTitle("BackgroundCreator Wallpaper")
-        self.setWindowFlag(self.windowFlags() | self.windowFlags().FramelessWindowHint)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
     def show_on_desktop(self, screen: QScreen) -> bool:
+        if not wallpaper_supported():
+            return False
         geo: QRect = screen.geometry()
         self.setGeometry(geo)
         self._scene.setSceneRect(0, 0, geo.width(), geo.height())

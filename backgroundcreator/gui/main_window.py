@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import math
 import shutil
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QCloseEvent, QFont, QGuiApplication, QIcon, QKeySequence, QMovie, QPainter, QPainterPath, QPalette, QPen, QPixmap, QScreen, QShortcut, QUndoCommand, QUndoStack
+from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QMovie, QPainter, QPainterPath, QPalette, QPen, QPixmap, QScreen, QShortcut, QUndoCommand, QUndoStack
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
     QApplication,
@@ -60,6 +59,7 @@ from backgroundcreator.gui.editor_widget import EditorWidget
 from backgroundcreator.gui.layers import BlendMode, FillMode, TextEffect, TextLayerItem, TextStyle, ImageLayerItem, VideoLayerItem, ParticleLayerItem
 from backgroundcreator.gui.scene import ITEM_DATA_ANIM_MODE, ITEM_DATA_ANIM_PAYLOAD, ITEM_DATA_SOURCE_KIND, ITEM_DATA_SOURCE_PATH
 from backgroundcreator.gui.wallpaper_window import WallpaperWindow
+from backgroundcreator.win32.wallpaper_host import wallpaper_supported
 from backgroundcreator.layout.layout_io import LAYOUT_VERSION, load_layout_file, save_layout_file
 from backgroundcreator.prefs.color_presets import ColorPresets
 from backgroundcreator.util.paths import app_data_dir, project_dir
@@ -761,6 +761,13 @@ class MainWindow(QMainWindow):
         self._keep_running_on_close = False
         self._tray: QSystemTrayIcon | None = None
         self._ui_state_path = app_data_dir() / "ui_state.json"
+        self._autosave_path = app_data_dir() / "autosave.json"
+        self._recent_layouts: list[str] = []
+        self._fps_cap = 30
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(60_000)
+        self._autosave_timer.timeout.connect(self._autosave_now)
+        self._autosave_last_json: str | None = None
 
         self._build_actions()
         self._build_ui()
@@ -773,6 +780,9 @@ class MainWindow(QMainWindow):
         self._refresh_animation_controls()
         self._install_shortcuts()
         self._on_monitor_changed(self._monitor_tabs.currentIndex())
+        self._apply_fps_cap(self._fps_cap)
+        self._update_recent_menu()
+        self._autosave_timer.start()
 
     def _build_actions(self) -> None:
         self._act_undo = self._undo_stack.createUndoAction(self, "Undo")
@@ -786,7 +796,10 @@ class MainWindow(QMainWindow):
         self._act_save_layout = QAction("Save Layout…", self)
         self._act_load_layout = QAction("Load Layout…", self)
         self._act_export_packaged_layout = QAction("Export Packaged Layout…", self)
+        self._act_export_frame = QAction("Export Frame as Image…", self)
+        self._act_recover_autosave = QAction("Recover Autosave", self)
         self._act_open_background = QAction("Open Background…", self)
+        self._act_background_color = QAction("Background Color…", self)
         self._act_quit = QAction("Quit", self)
         try:
             self._act_quit.setShortcut(QKeySequence.Quit)
@@ -804,6 +817,9 @@ class MainWindow(QMainWindow):
         self._act_unset_wallpaper.setEnabled(False)
 
         self._act_show_hotkeys = QAction("Hotkeys", self)
+        self._act_zoom_in = QAction("Zoom In", self)
+        self._act_zoom_out = QAction("Zoom Out", self)
+        self._act_zoom_reset = QAction("Reset Zoom", self)
 
         self._act_snap_grid = QAction("Snap Grid", self)
         self._act_snap_grid.setCheckable(True)
@@ -842,6 +858,27 @@ class MainWindow(QMainWindow):
         self._act_theme_preset_light = QAction("Light", self)
         self._act_theme_preset_midnight = QAction("Midnight", self)
         self._act_theme_reset = QAction("Reset GUI Colors", self)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        try:
+            if event.type() in (
+                QEvent.Type.WindowStateChange,
+                QEvent.Type.ActivationChange,
+                QEvent.Type.Show,
+                QEvent.Type.Hide,
+            ):
+                self._refresh_scene_activity()
+        except Exception:
+            pass
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._refresh_scene_activity()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._refresh_scene_activity()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._save_ui_state()
@@ -906,14 +943,23 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+        self._refresh_scene_activity()
 
     def _quit_from_tray(self) -> None:
         self._closing = True
+        # Quitting skips closeEvent, so persist window/theme state and tear the
+        # wallpaper windows down here as well.
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
         try:
             self._unset_wallpaper()
         except Exception:
             pass
-        QApplication.instance().quit()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
@@ -964,6 +1010,33 @@ class MainWindow(QMainWindow):
                         self._monitor_editors[i].scene.set_background(p)
                     except Exception:
                         continue
+        colors = data.get("last_background_colors")
+        if isinstance(colors, list):
+            for i, c in enumerate(colors):
+                if not isinstance(c, str) or not c.strip() or i >= len(self._monitor_editors):
+                    continue
+                has_path = (
+                    isinstance(paths, list)
+                    and i < len(paths)
+                    and isinstance(paths[i], str)
+                    and bool(paths[i].strip())
+                )
+                if has_path:
+                    continue
+                try:
+                    self._monitor_editors[i].scene.set_background_color(QColor(c))
+                except Exception:
+                    continue
+        try:
+            saved_fps = int(data.get("fps_cap", 0) or 0)
+        except Exception:
+            saved_fps = 0
+        if saved_fps > 0:
+            self._apply_fps_cap(saved_fps)
+        recents = data.get("recent_layouts")
+        if isinstance(recents, list):
+            self._recent_layouts = [str(p) for p in recents if isinstance(p, str) and p.strip()][:8]
+            self._update_recent_menu()
 
     def _save_ui_state(self) -> None:
         try:
@@ -971,6 +1044,7 @@ class MainWindow(QMainWindow):
         except Exception:
             return
         bg_paths: list[str | None] = []
+        bg_colors: list[str | None] = []
         try:
             for editor in self._monitor_editors:
                 try:
@@ -978,15 +1052,22 @@ class MainWindow(QMainWindow):
                     st = getattr(scene, "_background_state", None)
                     p = getattr(st, "path", None)
                     bg_paths.append(str(p) if p is not None else None)
+                    c = getattr(st, "color", None)
+                    bg_colors.append(str(c) if c else None)
                 except Exception:
                     bg_paths.append(None)
+                    bg_colors.append(None)
         except Exception:
             bg_paths = []
+            bg_colors = []
         data = {
             "geometry": bytes(self.saveGeometry()).hex(),
             "state": bytes(self.saveState()).hex(),
             "gui_theme": self._serialize_gui_theme(),
             "last_background_paths": bg_paths,
+            "last_background_colors": bg_colors,
+            "fps_cap": int(self._fps_cap),
+            "recent_layouts": list(self._recent_layouts),
         }
         try:
             self._ui_state_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -1889,9 +1970,13 @@ class MainWindow(QMainWindow):
         menu_file = menubar.addMenu("File")
         menu_file.addAction(self._act_save_layout)
         menu_file.addAction(self._act_load_layout)
+        self._menu_recent = menu_file.addMenu("Open Recent")
         menu_file.addAction(self._act_export_packaged_layout)
+        menu_file.addAction(self._act_export_frame)
+        menu_file.addAction(self._act_recover_autosave)
         menu_file.addSeparator()
         menu_file.addAction(self._act_open_background)
+        menu_file.addAction(self._act_background_color)
         menu_file.addSeparator()
         menu_file.addAction(self._act_quit)
 
@@ -1916,6 +2001,10 @@ class MainWindow(QMainWindow):
         menu_view.addAction(self._act_snap_grid)
         menu_view.addAction(self._act_snap_center)
         menu_view.addAction(self._act_show_grid)
+        menu_view.addSeparator()
+        menu_view.addAction(self._act_zoom_in)
+        menu_view.addAction(self._act_zoom_out)
+        menu_view.addAction(self._act_zoom_reset)
         menu_view.addSeparator()
         menu_theme = menu_view.addMenu("Theme")
         menu_theme_presets = menu_theme.addMenu("Presets")
@@ -1946,6 +2035,15 @@ class MainWindow(QMainWindow):
         menu_theme.addSeparator()
         menu_theme.addAction(self._act_theme_reset)
 
+        menu_view.addSeparator()
+        menu_fps = menu_view.addMenu("Frame Rate")
+        self._fps_actions: dict[int, QAction] = {}
+        for fps_value, fps_label in ((60, "60 FPS"), (30, "30 FPS"), (24, "24 FPS"), (15, "15 FPS")):
+            act_fps = QAction(fps_label, self)
+            act_fps.setCheckable(True)
+            act_fps.triggered.connect(lambda _checked=False, v=fps_value: self._apply_fps_cap(v))
+            menu_fps.addAction(act_fps)
+            self._fps_actions[fps_value] = act_fps
         menu_view.addSeparator()
         menu_wallpaper = menu_view.addMenu("Wallpaper")
         menu_wallpaper.addAction(self._act_set_wallpaper_current)
@@ -2177,6 +2275,13 @@ class MainWindow(QMainWindow):
         match_row.addWidget(self._btn_match_w)
         match_row.addWidget(self._btn_match_h)
         align_content_layout.addLayout(match_row)
+
+        fit_row = QHBoxLayout()
+        self._btn_fit_canvas = QPushButton("Fit to Canvas")
+        self._btn_fill_canvas = QPushButton("Fill Canvas")
+        fit_row.addWidget(self._btn_fit_canvas)
+        fit_row.addWidget(self._btn_fill_canvas)
+        align_content_layout.addLayout(fit_row)
         
         align_box.set_content_layout(align_content_layout)
         props_layout.addWidget(align_box)
@@ -2474,11 +2579,17 @@ class MainWindow(QMainWindow):
         effects_form = QFormLayout()
         
         self._combo_effect_type = ArrowComboBox()
-        self._combo_effect_type.addItems(["None", "Blur", "Shadow", "Glow"])
+        self._combo_effect_type.addItems(["None", "Blur", "Shadow", "Glow", "Colorize"])
         
         self._spin_effect_radius = QDoubleSpinBox()
         self._spin_effect_radius.setRange(0.0, 200.0)
         self._spin_effect_radius.setDecimals(1)
+
+        self._spin_effect_strength = QDoubleSpinBox()
+        self._spin_effect_strength.setRange(0.0, 100.0)
+        self._spin_effect_strength.setDecimals(0)
+        self._spin_effect_strength.setSingleStep(5.0)
+        self._spin_effect_strength.setValue(60.0)
         
         self._spin_effect_dx = QDoubleSpinBox()
         self._spin_effect_dy = QDoubleSpinBox()
@@ -2490,6 +2601,7 @@ class MainWindow(QMainWindow):
         
         effects_form.addRow("Type", self._combo_effect_type)
         effects_form.addRow("Radius", self._spin_effect_radius)
+        effects_form.addRow("Strength %", self._spin_effect_strength)
         
         eff_offset_row = QHBoxLayout()
         eff_offset_row.addWidget(QLabel("dx"))
@@ -2565,14 +2677,21 @@ class MainWindow(QMainWindow):
         self._dock_props = props_dock
 
         self._refresh_presets()
+        self._update_recent_menu()
 
     def _wire(self) -> None:
         self._act_save_layout.triggered.connect(self._save_layout)
         self._act_load_layout.triggered.connect(self._load_layout)
         self._act_export_packaged_layout.triggered.connect(self._export_packaged_layout)
+        self._act_export_frame.triggered.connect(self._export_frame_image)
+        self._act_recover_autosave.triggered.connect(self._recover_autosave)
         self._act_open_background.triggered.connect(self._open_background)
+        self._act_background_color.triggered.connect(self._set_background_color)
         self._act_quit.triggered.connect(self._quit_from_tray)
         self._act_show_hotkeys.triggered.connect(self._show_hotkeys)
+        self._act_zoom_in.triggered.connect(lambda: self._current_editor().view.zoom_in())
+        self._act_zoom_out.triggered.connect(lambda: self._current_editor().view.zoom_out())
+        self._act_zoom_reset.triggered.connect(lambda: self._current_editor().view.zoom_reset())
         self._act_theme_buttons.triggered.connect(lambda: self._pick_gui_theme_color("buttons"))
         self._act_theme_outer.triggered.connect(lambda: self._pick_gui_theme_color("outer"))
         self._act_theme_inner.triggered.connect(lambda: self._pick_gui_theme_color("inner"))
@@ -2665,6 +2784,8 @@ class MainWindow(QMainWindow):
         self._btn_distribute_v.clicked.connect(lambda: self._distribute_selected(axis="y"))
         self._btn_match_w.clicked.connect(lambda: self._match_size_selected(axis="w"))
         self._btn_match_h.clicked.connect(lambda: self._match_size_selected(axis="h"))
+        self._btn_fit_canvas.clicked.connect(lambda: self._fit_selected_to_canvas("fit"))
+        self._btn_fill_canvas.clicked.connect(lambda: self._fit_selected_to_canvas("fill"))
         self._btn_anim_start.clicked.connect(self._start_animation_selected)
         self._btn_anim_stop.clicked.connect(self._stop_animation_selected)
         self._btn_anim_draw_path.clicked.connect(self._draw_follow_path)
@@ -2700,6 +2821,7 @@ class MainWindow(QMainWindow):
 
         self._combo_effect_type.currentIndexChanged.connect(self._apply_visual_effects_from_ui)
         self._spin_effect_radius.valueChanged.connect(self._apply_visual_effects_from_ui)
+        self._spin_effect_strength.valueChanged.connect(self._apply_visual_effects_from_ui)
         self._spin_effect_dx.valueChanged.connect(self._apply_visual_effects_from_ui)
         self._spin_effect_dy.valueChanged.connect(self._apply_visual_effects_from_ui)
         self._btn_effect_color.clicked.connect(self._pick_effect_color)
@@ -2769,6 +2891,10 @@ class MainWindow(QMainWindow):
         add_global_shortcut("Ctrl+H", "Toggle hide", self._toggle_hide_selected_layer)
         add_global_shortcut("Ctrl+G", "Toggle snap grid", lambda: self._act_snap_grid.toggle())
         add_global_shortcut("Ctrl+Shift+G", "Toggle snap center", lambda: self._act_snap_center.toggle())
+        add_global_shortcut("Ctrl+=", "Zoom in", lambda: self._current_editor().view.zoom_in())
+        add_global_shortcut("Ctrl+-", "Zoom out", lambda: self._current_editor().view.zoom_out())
+        add_global_shortcut("Ctrl+0", "Reset zoom / fit canvas", lambda: self._current_editor().view.zoom_reset())
+        record("Middle-drag", "Pan canvas")
 
         record("Alt+Left", "Previous layout")
         record("Alt+Right", "Next layout")
@@ -3279,6 +3405,127 @@ class MainWindow(QMainWindow):
             self._chk_layout_autocycle.blockSignals(False)
         self._spin_layout_interval.blockSignals(False)
 
+    def _apply_fps_cap(self, fps: int) -> None:
+        try:
+            value = int(fps)
+        except Exception:
+            value = 30
+        value = max(1, min(240, value))
+        self._fps_cap = value
+        for editor in self._monitor_editors:
+            try:
+                editor.scene.set_fps_cap(value)
+            except Exception:
+                pass
+        for fps_value, action in getattr(self, "_fps_actions", {}).items():
+            try:
+                action.setChecked(int(fps_value) == value)
+            except Exception:
+                pass
+
+    def _refresh_scene_activity(self) -> None:
+        """Only animate what the user can actually see: the visible editor tab or a
+        monitor that is hosting the live wallpaper."""
+        try:
+            window_active = bool(self.isVisible()) and not bool(self.isMinimized())
+        except Exception:
+            window_active = True
+        current = self._current_monitor_index()
+        for i, editor in enumerate(self._monitor_editors):
+            active = i in self._wallpaper_windows
+            if not active and window_active and i == current:
+                active = True
+            try:
+                editor.scene.set_render_active(bool(active))
+            except Exception:
+                pass
+
+    def _remember_recent_layout(self, path: str) -> None:
+        try:
+            resolved = str(Path(path).resolve())
+        except Exception:
+            resolved = str(path)
+        if not resolved:
+            return
+        try:
+            if Path(resolved) == Path(self._autosave_path).resolve():
+                return
+        except Exception:
+            pass
+        recents = [p for p in self._recent_layouts if p != resolved]
+        recents.insert(0, resolved)
+        self._recent_layouts = recents[:8]
+        # Defer the menu rebuild: it is often triggered from an action that
+        # lives in the menu being cleared.
+        QTimer.singleShot(0, self._update_recent_menu)
+
+    def _clear_recent_layouts(self) -> None:
+        self._recent_layouts = []
+        self._update_recent_menu()
+
+    def _update_recent_menu(self) -> None:
+        menu = getattr(self, "_menu_recent", None)
+        if menu is None:
+            return
+        menu.clear()
+        existing = [p for p in self._recent_layouts if Path(p).exists()]
+        if not existing:
+            empty = QAction("(no recent layouts)", self)
+            empty.setEnabled(False)
+            menu.addAction(empty)
+            return
+        for path in existing:
+            action = QAction(path, self)
+            action.triggered.connect(lambda _checked=False, p=path: self._load_layout_from_path(p, show_errors=True))
+            menu.addAction(action)
+        menu.addSeparator()
+        clear_action = QAction("Clear Recent", self)
+        clear_action.triggered.connect(self._clear_recent_layouts)
+        menu.addAction(clear_action)
+
+    def _autosave_now(self) -> None:
+        try:
+            payload = self._serialize_layout()
+        except Exception:
+            return
+        has_content = False
+        for monitor in payload.get("monitors", []) or []:
+            if not isinstance(monitor, dict):
+                continue
+            background = monitor.get("background")
+            if isinstance(background, dict) and (background.get("path") or background.get("color")):
+                has_content = True
+                break
+            if monitor.get("layers"):
+                has_content = True
+                break
+        if not has_content:
+            return
+        try:
+            serialized = json.dumps(payload, sort_keys=True)
+        except Exception:
+            serialized = ""
+        if serialized and serialized == self._autosave_last_json:
+            return
+        try:
+            save_layout_file(str(self._autosave_path), payload)
+            self._autosave_last_json = serialized
+        except Exception:
+            pass
+
+    def _recover_autosave(self) -> None:
+        if not self._autosave_path.exists():
+            QMessageBox.information(self, "Recover Autosave", "There is no autosave file yet.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Recover Autosave",
+            "Replace the current layouts with the last autosaved version?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._load_layout_from_path(str(self._autosave_path), show_errors=True)
+
     def _handle_ipc_command(self, command: str) -> None:
         for raw in (command or "").splitlines():
             line = (raw or "").strip()
@@ -3315,7 +3562,11 @@ class MainWindow(QMainWindow):
         return {
             "follow_paths": self._serialize_follow_paths(),
             "orbit_centers": self._serialize_orbit_centers(scene),
-            "background": {"path": str(bg.path) if bg.path is not None else None, "kind": bg.kind},
+            "background": {
+                "path": str(bg.path) if bg.path is not None else None,
+                "kind": bg.kind,
+                "color": getattr(bg, "color", None),
+            },
             "layers": layers,
         }
 
@@ -3427,7 +3678,14 @@ class MainWindow(QMainWindow):
             p = bg.get("path")
             if isinstance(p, str) and p:
                 bg_path = self._resolve_layout_path(p, base_dir=None)
-        if bg_path is not None and Path(bg_path).exists():
+        bg_color = bg.get("color") if isinstance(bg, dict) else None
+        bg_kind = str(bg.get("kind") or "") if isinstance(bg, dict) else ""
+        if bg_path is None and bg_kind == "color" and isinstance(bg_color, str) and bg_color.strip():
+            try:
+                scene.set_background_color(QColor(bg_color))
+            except Exception:
+                pass
+        elif bg_path is not None and Path(bg_path).exists():
             scene.set_background(str(bg_path))
         elif bg_path is not None:
             missing_files.append(str(bg_path))
@@ -3713,6 +3971,21 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _set_background_color(self) -> None:
+        scene = self._current_scene()
+        try:
+            current = QColor(str(scene.background_state().color or "#000000"))
+        except Exception:
+            current = QColor("#000000")
+        color = QColorDialog.getColor(current, self, "Background Color")
+        if not color.isValid():
+            return
+        try:
+            scene.set_background_color(color)
+            self._save_ui_state()
+        except Exception as e:
+            QMessageBox.critical(self, "Background", f"Could not set the background color:\n{e}")
+
     def _open_background(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -3745,6 +4018,7 @@ class MainWindow(QMainWindow):
         try:
             payload = self._serialize_layout()
             save_layout_file(path, payload)
+            self._remember_recent_layout(path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save layout:\n{e}")
 
@@ -3819,6 +4093,7 @@ class MainWindow(QMainWindow):
 
         try:
             save_layout_file(str(layout_path), payload)
+            self._remember_recent_layout(str(layout_path))
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to export packaged layout:\n{e}")
             return
@@ -3827,6 +4102,44 @@ class MainWindow(QMainWindow):
             short = "\n".join(missing_files[:20])
             more = "" if len(missing_files) <= 20 else f"\n… and {len(missing_files) - 20} more"
             QMessageBox.warning(self, "Export", f"Some files were missing and were skipped:\n{short}{more}")
+
+    def _export_frame_image(self) -> None:
+        if not self._screens:
+            return
+        monitor_index = self._current_monitor_index()
+        scene = self._monitor_editors[monitor_index].scene
+        rect = scene.sceneRect()
+        width = max(1, int(round(float(rect.width()))))
+        height = max(1, int(round(float(rect.height()))))
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Frame",
+            str(project_dir() / f"frame_monitor{monitor_index + 1}.png"),
+            "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)",
+        )
+        if not path:
+            return
+        target = Path(path)
+        if not target.suffix:
+            target = target.with_suffix(".png")
+
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(image)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            scene.render(painter, QRectF(0.0, 0.0, float(width), float(height)), rect)
+        finally:
+            painter.end()
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        if not image.save(str(target)):
+            QMessageBox.critical(self, "Export", f"Could not write the image to:\n{target}")
 
     def _load_layout(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -3862,6 +4175,7 @@ class MainWindow(QMainWindow):
             if show_errors:
                 QMessageBox.critical(self, "Error", f"Failed to apply layout:\n{e}")
             return False
+        self._remember_recent_layout(path)
         return True
 
     def _set_wallpaper(self) -> None:
@@ -3876,7 +4190,8 @@ class MainWindow(QMainWindow):
             ok = window.show_on_desktop(screen)
             ok_any = ok_any and ok
         if not ok_any:
-            QMessageBox.warning(self, "Wallpaper", "Could not attach one or more windows to the desktop.")
+            hint = "" if wallpaper_supported() else "\n\nLive wallpaper attachment is currently Windows-only."
+            QMessageBox.warning(self, "Wallpaper", "Could not attach one or more windows to the desktop." + hint)
         self._update_wallpaper_action_states()
 
     def _unset_wallpaper(self) -> None:
@@ -3901,7 +4216,8 @@ class MainWindow(QMainWindow):
             self._wallpaper_windows[i] = window
         ok = window.show_on_desktop(screen)
         if not ok:
-            QMessageBox.warning(self, "Wallpaper", "Could not attach this monitor to the desktop.")
+            hint = "" if wallpaper_supported() else "\n\nLive wallpaper attachment is currently Windows-only."
+            QMessageBox.warning(self, "Wallpaper", "Could not attach this monitor to the desktop." + hint)
         self._update_wallpaper_action_states()
 
     def _unset_wallpaper_current(self) -> None:
@@ -3915,6 +4231,7 @@ class MainWindow(QMainWindow):
         self._update_wallpaper_action_states()
 
     def _update_wallpaper_action_states(self) -> None:
+        self._refresh_scene_activity()
         if not self._screens:
             self._act_set_wallpaper_current.setEnabled(False)
             self._act_unset_wallpaper_current.setEnabled(False)
@@ -4413,6 +4730,7 @@ class MainWindow(QMainWindow):
                     "background": {
                         "path": str(bg.path) if bg.path is not None else None,
                         "kind": bg.kind,
+                        "color": getattr(bg, "color", None),
                     },
                     "orbit_centers": self._serialize_orbit_centers(scene),
                     "layers": layers,
@@ -4502,6 +4820,8 @@ class MainWindow(QMainWindow):
                 "gravity_y": item.gravity_y,
                 "lifetime": item.lifetime,
                 "spread": item.spread,
+                "emission_mode": str(item.emission_mode),
+                "direction": float(item.direction),
             }
         else:
             layer_type = kind or label.lower()
@@ -4573,9 +4893,91 @@ class MainWindow(QMainWindow):
                 out["aspect"] = "fit" if mode == Qt.KeepAspectRatio else "stretch"
             except Exception:
                 pass
+        if not isinstance(item, TextLayerItem):
+            effect_blob = self._serialize_graphics_effect(item)
+            if isinstance(effect_blob, dict):
+                out["effect"] = effect_blob
         if isinstance(anim_blob, dict):
             out["anim"] = anim_blob
         return out
+
+    def _serialize_graphics_effect(self, item: object) -> dict | None:
+        try:
+            effect = item.graphicsEffect()
+        except Exception:
+            return None
+        if effect is None:
+            return None
+        try:
+            if isinstance(effect, QGraphicsBlurEffect):
+                radius = float(effect.blurRadius())
+                if radius <= 0.0:
+                    return None
+                return {"type": "blur", "radius": radius}
+            if isinstance(effect, QGraphicsColorizeEffect):
+                return {
+                    "type": "colorize",
+                    "strength": float(effect.strength()),
+                    "color": effect.color().name(QColor.NameFormat.HexArgb),
+                }
+            if isinstance(effect, QGraphicsDropShadowEffect):
+                offset = effect.offset()
+                dx = float(offset.x())
+                dy = float(offset.y())
+                kind = "glow" if abs(dx) < 0.1 and abs(dy) < 0.1 else "shadow"
+                return {
+                    "type": kind,
+                    "radius": float(effect.blurRadius()),
+                    "offset": [dx, dy],
+                    "color": effect.color().name(QColor.NameFormat.HexArgb),
+                }
+        except Exception:
+            return None
+        return None
+
+    def _apply_effect_from_payload(self, item: object, data: dict) -> None:
+        if not hasattr(item, "set_effect"):
+            return
+        kind = data.get("type")
+        if not isinstance(kind, str):
+            return
+        try:
+            radius = float(data.get("radius", 0.0))
+        except Exception:
+            radius = 0.0
+        params: dict = {"radius": radius}
+        color = data.get("color")
+        if isinstance(color, str):
+            parsed = QColor(color)
+            if parsed.isValid():
+                params["color"] = parsed
+        offset = data.get("offset")
+        if isinstance(offset, list) and len(offset) >= 2:
+            try:
+                params["offset"] = (float(offset[0]), float(offset[1]))
+            except Exception:
+                params["offset"] = (0.0, 0.0)
+        if kind == "colorize":
+            try:
+                strength = float(data.get("strength", 0.6))
+            except Exception:
+                strength = 0.6
+            item.set_effect(
+                "colorize",
+                {
+                    "color": params.get("color", QColor("#ffffff")),
+                    "strength": max(0.0, min(1.0, strength)),
+                },
+            )
+            return
+        if kind == "blur":
+            item.set_effect("blur", params)
+        elif kind in ("shadow", "glow"):
+            if kind == "glow" or "offset" not in params:
+                params["offset"] = (0.0, 0.0)
+            item.set_effect(str(kind), params)
+        else:
+            item.set_effect("none", {})
 
     def _serialize_text_style(self, style: TextStyle) -> dict:
         return {
@@ -4640,7 +5042,14 @@ class MainWindow(QMainWindow):
                 p = bg.get("path")
                 if isinstance(p, str) and p:
                     bg_path = self._resolve_layout_path(p, base_dir=base_dir)
-            if bg_path is not None and Path(bg_path).exists():
+            bg_color = bg.get("color") if isinstance(bg, dict) else None
+            bg_kind = str(bg.get("kind") or "") if isinstance(bg, dict) else ""
+            if bg_path is None and bg_kind == "color" and isinstance(bg_color, str) and bg_color.strip():
+                try:
+                    scene.set_background_color(QColor(bg_color))
+                except Exception:
+                    pass
+            elif bg_path is not None and Path(bg_path).exists():
                 scene.set_background(str(bg_path))
             elif bg_path is not None:
                 missing_files.append(str(bg_path))
@@ -4819,6 +5228,13 @@ class MainWindow(QMainWindow):
                 item.spread = float(layer.get("spread", 360.0))
             except Exception:
                 pass
+            emission = layer.get("emission_mode")
+            if isinstance(emission, str) and emission in ("point", "rect"):
+                item.emission_mode = emission
+            try:
+                item.direction = float(layer.get("direction", 0.0))
+            except Exception:
+                pass
             self._apply_layer_state_from_payload(item, layer)
             return item, label
 
@@ -4883,6 +5299,13 @@ class MainWindow(QMainWindow):
                     item.setAspectRatioMode(Qt.IgnoreAspectRatio)
                 else:
                     item.setAspectRatioMode(Qt.KeepAspectRatio)
+            except Exception:
+                pass
+
+        effect_raw = layer.get("effect")
+        if isinstance(effect_raw, dict) and not isinstance(item, TextLayerItem):
+            try:
+                self._apply_effect_from_payload(item, effect_raw)
             except Exception:
                 pass
 
@@ -5371,6 +5794,7 @@ class MainWindow(QMainWindow):
         widgets = (
             self._combo_effect_type,
             self._spin_effect_radius,
+            self._spin_effect_strength,
             self._spin_effect_dx,
             self._spin_effect_dy,
             self._btn_effect_color,
@@ -5405,6 +5829,13 @@ class MainWindow(QMainWindow):
                 dx = offset.x()
                 dy = offset.y()
                 color = eff.color()
+            elif isinstance(eff, QGraphicsColorizeEffect):
+                eff_type = "Colorize"
+                color = eff.color()
+                try:
+                    self._spin_effect_strength.setValue(float(eff.strength()) * 100.0)
+                except Exception:
+                    pass
 
             idx = self._combo_effect_type.findText(eff_type)
             if idx >= 0:
@@ -5484,6 +5915,10 @@ class MainWindow(QMainWindow):
             params["offset"] = (0.0, 0.0)
             params["color"] = getattr(self, "_current_effect_color", Qt.black)
             item.set_effect("glow", params)
+        elif eff_type == "Colorize":
+            params["color"] = getattr(self, "_current_effect_color", QColor("#ffffff"))
+            params["strength"] = max(0.0, min(1.0, float(self._spin_effect_strength.value()) / 100.0))
+            item.set_effect("colorize", params)
         else:
             item.set_effect("none", {})
 
@@ -6122,6 +6557,76 @@ class MainWindow(QMainWindow):
             return
         if not self._undo_blocked:
             self._transform_undo_timer.start(250)
+
+    def _fit_selected_to_canvas(self, mode: str) -> None:
+        scene = self._current_scene()
+        try:
+            items = [
+                it for it in scene.selectedItems() if bool(it.flags() & QGraphicsItem.ItemIsMovable)
+            ]
+        except Exception:
+            items = []
+        if not items:
+            return
+        try:
+            target = scene._anim_bounds_rect()
+        except Exception:
+            target = scene.sceneRect()
+        if float(target.width()) <= 0.0 or float(target.height()) <= 0.0:
+            return
+        target_center = target.center()
+
+        changes: list[tuple[object, tuple[float, float, float, float], tuple[float, float, float, float]]] = []
+        for item in items:
+            try:
+                bounds = item.sceneBoundingRect()
+            except Exception:
+                continue
+            if float(bounds.width()) <= 0.0 or float(bounds.height()) <= 0.0:
+                continue
+            w_ratio = float(target.width()) / float(bounds.width())
+            h_ratio = float(target.height()) / float(bounds.height())
+            factor = max(w_ratio, h_ratio) if mode == "fill" else min(w_ratio, h_ratio)
+            if not (factor > 0.0):
+                continue
+            before = (
+                float(item.pos().x()),
+                float(item.pos().y()),
+                float(item.scale()),
+                float(item.rotation()),
+            )
+            try:
+                item.setScale(max(0.01, float(item.scale()) * float(factor)))
+            except Exception:
+                continue
+            try:
+                new_bounds = item.sceneBoundingRect()
+                pos = item.pos()
+                item.setPos(
+                    QPointF(
+                        float(pos.x()) + (float(target_center.x()) - float(new_bounds.center().x())),
+                        float(pos.y()) + (float(target_center.y()) - float(new_bounds.center().y())),
+                    )
+                )
+            except Exception:
+                pass
+            after = (
+                float(item.pos().x()),
+                float(item.pos().y()),
+                float(item.scale()),
+                float(item.rotation()),
+            )
+            if after != before:
+                changes.append((item, before, after))
+
+        if not changes:
+            return
+        self._undo_stack.push(
+            _MultiTransformCommand(self, self._current_monitor_index(), "Fit To Canvas", changes)
+        )
+        selected = self._selected_graphics_item()
+        if selected is not None:
+            self._sync_transform_to_ui(selected)
 
     def _align_selected(self, horizontal: str | None = None, vertical: str | None = None) -> None:
         scene = self._current_scene()
