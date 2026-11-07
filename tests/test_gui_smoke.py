@@ -183,6 +183,24 @@ class GuiSmokeTest(unittest.TestCase):
         bad = [m for m in messages if "removeItem" in m]
         self.assertEqual(bad, [], f"Qt emitted removeItem warnings: {bad}")
 
+    def test_theme_application_emits_no_font_warnings(self) -> None:
+        """Re-applying the app stylesheet must not emit QFont::setPointSize warnings."""
+        from PySide6.QtCore import qInstallMessageHandler
+
+        messages: list[str] = []
+        previous = qInstallMessageHandler(lambda mode, ctx, msg: messages.append(msg))
+        try:
+            base = self.app.styleSheet()
+            self.window._apply_gui_theme_styles()
+            self.app.setStyleSheet(base + "\nQComboBox { padding: 2px; }")
+            self.app.processEvents()
+            self.app.setStyleSheet(base)
+            self.app.processEvents()
+        finally:
+            qInstallMessageHandler(previous)
+        bad = [m for m in messages if "setPointSize" in m]
+        self.assertEqual(bad, [], f"Qt emitted font-size warnings: {bad}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QCloseEvent, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QMovie, QPainter, QPainterPath, QPalette, QPen, QPixmap, QScreen, QShortcut, QUndoCommand, QUndoStack
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QFont, QFontDatabase, QGuiApplication, QIcon, QImage, QKeySequence, QMovie, QPainter, QPainterPath, QPalette, QPen, QPixmap, QScreen, QShortcut, QUndoCommand, QUndoStack
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
     QApplication,
@@ -116,43 +116,6 @@ class ComboArrowProxyStyle(QProxyStyle):
 
 
 class ArrowComboBox(QComboBox):
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        opt = QStyleOptionComboBox()
-        try:
-            self.initStyleOption(opt)
-        except Exception:
-            return
-        try:
-            rect = self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, opt, QStyle.SubControl.SC_ComboBoxArrow, self)
-        except Exception:
-            rect = QRect()
-        if rect.isNull() or rect.width() <= 0 or rect.height() <= 0:
-            rect = QRect(max(0, int(self.width()) - 22), 0, 22, int(self.height()))
-
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            color = QColor(self.palette().color(QPalette.ColorRole.Text))
-            if not self.isEnabled():
-                color.setAlpha(max(30, int(color.alpha() * 0.55)))
-
-            cx = float(rect.center().x())
-            cy = float(rect.center().y())
-            s = float(min(rect.width(), rect.height())) * 0.34
-            path = QPainterPath()
-            path.moveTo(QPointF(cx - s, cy - (s * 0.15)))
-            path.lineTo(QPointF(cx + s, cy - (s * 0.15)))
-            path.lineTo(QPointF(cx, cy + (s * 0.80)))
-            path.closeSubpath()
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawPath(path)
-        finally:
-            painter.end()
-
-
-class ArrowFontComboBox(QFontComboBox):
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         opt = QStyleOptionComboBox()
@@ -2482,7 +2445,12 @@ class MainWindow(QMainWindow):
         text_wrapper = QVBoxLayout()
 
         self._txt_text = QLineEdit()
-        self._font_combo = ArrowFontComboBox()
+        self._font_combo = ArrowComboBox()
+        try:
+            families = [str(f) for f in QFontDatabase.families() if str(f).strip()]
+            self._font_combo.addItems(families)
+        except Exception:
+            pass
         self._spin_font_size = QSpinBox()
         self._spin_font_size.setRange(6, 240)
         self._chk_shadow = QCheckBox("Shadow")
@@ -2794,7 +2762,7 @@ class MainWindow(QMainWindow):
         self._chk_anim_avoid_taskbar.toggled.connect(self._toggle_anim_avoid_taskbar)
 
         self._txt_text.textEdited.connect(self._apply_text_from_ui)
-        self._font_combo.currentFontChanged.connect(self._apply_text_from_ui)
+        self._font_combo.currentTextChanged.connect(self._apply_text_from_ui)
         self._spin_font_size.valueChanged.connect(self._apply_text_from_ui)
         self._combo_fill_mode.currentIndexChanged.connect(self._apply_text_from_ui)
         self._chk_shadow.stateChanged.connect(self._apply_text_from_ui)
@@ -8691,7 +8659,10 @@ class MainWindow(QMainWindow):
         self._spin_effect_amount.blockSignals(True)
         try:
             self._txt_text.setText(item.text())
-            self._font_combo.setCurrentFont(style.font)
+            family = str(style.font.family() or "").strip()
+            family_idx = self._font_combo.findText(family)
+            if family_idx >= 0:
+                self._font_combo.setCurrentIndex(family_idx)
             self._spin_font_size.setValue(style.font.pointSize())
             self._combo_fill_mode.setCurrentIndex(0 if style.fill_mode == FillMode.SOLID else 1)
             self._chk_shadow.setChecked(style.shadow_enabled)
@@ -8751,7 +8722,8 @@ class MainWindow(QMainWindow):
                 self._pending_text_undo = None
 
         style = item.style()
-        font = QFont(self._font_combo.currentFont())
+        family = str(self._font_combo.currentText() or "").strip()
+        font = QFont(family) if family else QFont()
         font.setPointSize(int(self._spin_font_size.value()))
 
         fill_mode = FillMode.SOLID if self._combo_fill_mode.currentIndex() == 0 else FillMode.GRADIENT
