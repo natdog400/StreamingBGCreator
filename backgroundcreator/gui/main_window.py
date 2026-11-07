@@ -8610,6 +8610,24 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    @staticmethod
+    def _effective_point_size(font: QFont) -> int:
+        """Usable point size for a font that may be sized in pixels instead."""
+        try:
+            size = int(font.pointSize())
+        except Exception:
+            size = -1
+        if size > 0:
+            return size
+        try:
+            pixels = int(font.pixelSize())
+        except Exception:
+            pixels = -1
+        if pixels > 0:
+            # 1px == 0.75pt at the 96 DPI Qt assumes for pixel-sized fonts.
+            return max(1, int(round(pixels * 0.75)))
+        return 12
+
     def _sync_text_to_ui(self, item: object) -> None:
         is_text = isinstance(item, TextLayerItem)
         for w in (
@@ -8663,7 +8681,7 @@ class MainWindow(QMainWindow):
             family_idx = self._font_combo.findText(family)
             if family_idx >= 0:
                 self._font_combo.setCurrentIndex(family_idx)
-            self._spin_font_size.setValue(style.font.pointSize())
+            self._spin_font_size.setValue(self._effective_point_size(style.font))
             self._combo_fill_mode.setCurrentIndex(0 if style.fill_mode == FillMode.SOLID else 1)
             self._chk_shadow.setChecked(style.shadow_enabled)
             self._chk_glow.setChecked(style.glow_enabled)

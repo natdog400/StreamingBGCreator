@@ -201,6 +201,28 @@ class GuiSmokeTest(unittest.TestCase):
         bad = [m for m in messages if "setPointSize" in m]
         self.assertEqual(bad, [], f"Qt emitted font-size warnings: {bad}")
 
+    def test_pixel_sized_font_shows_real_point_size(self) -> None:
+        """A font sized in pixels must not collapse the size spinner to its floor."""
+        import dataclasses
+
+        from PySide6.QtGui import QFont
+
+        scene = self.window._current_scene()
+        item = scene.add_text_layer()
+        item.set_text("pixel sized")
+        style = item.style()
+        pixel_font = QFont("Sans Serif")
+        pixel_font.setPixelSize(40)
+        self.assertEqual(pixel_font.pointSize(), -1)
+        if dataclasses.is_dataclass(style):
+            item.set_style(dataclasses.replace(style, font=pixel_font))
+        else:
+            item.set_style(style.__class__(**{**style.__dict__, "font": pixel_font}))
+
+        self.window._sync_text_to_ui(item)
+        shown = self.window._spin_font_size.value()
+        self.assertEqual(shown, 30)  # 40px at 96 DPI
+
 
 if __name__ == "__main__":
     unittest.main()
