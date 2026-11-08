@@ -580,6 +580,13 @@ class EditorScene(QGraphicsScene):
                     any_anim = True
                     break
                 try:
+                    effect = it.graphicsEffect()
+                except Exception:
+                    effect = None
+                if callable(getattr(effect, "advance_time", None)):
+                    any_anim = True
+                    break
+                try:
                     mode = it.data(ITEM_DATA_ANIM_MODE)
                 except Exception:
                     mode = None
@@ -641,6 +648,14 @@ class EditorScene(QGraphicsScene):
                     any_anim = True
                     it.advance_time(dt)
                     it.update()
+
+                try:
+                    effect = it.graphicsEffect()
+                except Exception:
+                    effect = None
+                if callable(getattr(effect, "advance_time", None)):
+                    any_anim = True
+                    effect.advance_time(dt)
 
                 try:
                     mode = it.data(ITEM_DATA_ANIM_MODE)

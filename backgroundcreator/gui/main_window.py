@@ -56,8 +56,22 @@ from PySide6.QtWidgets import (
 )
 
 from backgroundcreator.gui.editor_widget import EditorWidget
-from backgroundcreator.gui.layers import BlendMode, FillMode, TextEffect, TextLayerItem, TextStyle, ImageLayerItem, VideoLayerItem, ParticleLayerItem
+from backgroundcreator.gui.layers import BlendMode, FillMode, TextEffect, TextLayerItem, TextStyle, ImageLayerItem, VideoLayerItem, ParticleLayerItem, PulsingGlowEffect
 from backgroundcreator.gui.scene import ITEM_DATA_ANIM_MODE, ITEM_DATA_ANIM_PAYLOAD, ITEM_DATA_SOURCE_KIND, ITEM_DATA_SOURCE_PATH
+
+
+TEXT_EFFECT_ORDER: tuple[TextEffect, ...] = (
+    TextEffect.NONE,
+    TextEffect.RAINBOW,
+    TextEffect.WAVE,
+    TextEffect.TYPEWRITER,
+    TextEffect.SCRAMBLE,
+    TextEffect.PULSE,
+    TextEffect.SHIMMER,
+    TextEffect.NEON,
+    TextEffect.GLITCH,
+    TextEffect.LEVITATE,
+)
 from backgroundcreator.gui.wallpaper_window import WallpaperWindow
 from backgroundcreator.win32.wallpaper_host import wallpaper_supported
 from backgroundcreator.layout.layout_io import LAYOUT_VERSION, load_layout_file, save_layout_file
@@ -2446,12 +2460,14 @@ class MainWindow(QMainWindow):
 
         self._txt_text = QLineEdit()
         self._font_combo = ArrowComboBox()
+        self._font_combo.setToolTip("Font family for the selected text layer")
         try:
             families = [str(f) for f in QFontDatabase.families() if str(f).strip()]
             self._font_combo.addItems(families)
         except Exception:
             pass
         self._spin_font_size = QSpinBox()
+        self._spin_font_size.setToolTip("Text size in points")
         self._spin_font_size.setRange(6, 240)
         self._chk_shadow = QCheckBox("Shadow")
         self._chk_glow = QCheckBox("Glow")
@@ -2480,7 +2496,8 @@ class MainWindow(QMainWindow):
         self._spin_blur_radius.setSingleStep(1.0)
 
         self._combo_text_effect = ArrowComboBox()
-        self._combo_text_effect.addItems(["None", "Rainbow", "Wave", "Typewriter", "Scramble", "Pulse"])
+        self._combo_text_effect.addItems([effect.value.capitalize() for effect in TEXT_EFFECT_ORDER])
+        self._combo_text_effect.setToolTip("Animated text effect. Shimmer, Neon, Glitch and Levitate are the newest.")
         self._spin_effect_speed = QDoubleSpinBox()
         self._spin_effect_speed.setRange(0.0, 25.0)
         self._spin_effect_speed.setDecimals(2)
@@ -2547,7 +2564,8 @@ class MainWindow(QMainWindow):
         effects_form = QFormLayout()
         
         self._combo_effect_type = ArrowComboBox()
-        self._combo_effect_type.addItems(["None", "Blur", "Shadow", "Glow", "Colorize"])
+        self._combo_effect_type.addItems(["None", "Blur", "Shadow", "Glow", "Colorize", "Glow Pulse"])
+        self._combo_effect_type.setToolTip("Layer effect. Glow Pulse breathes steadily; radius and speed stay adjustable.")
         
         self._spin_effect_radius = QDoubleSpinBox()
         self._spin_effect_radius.setRange(0.0, 200.0)
@@ -2590,7 +2608,8 @@ class MainWindow(QMainWindow):
         particles_wrapper = QVBoxLayout()
         
         self._combo_particle_preset = ArrowComboBox()
-        self._combo_particle_preset.addItems(["Custom", "Snow", "Rain", "Explosion"])
+        self._combo_particle_preset.addItems(["Custom", "Snow", "Rain", "Explosion", "Fire", "Bubbles", "Confetti", "Sparkle", "Smoke"])
+        self._combo_particle_preset.setToolTip("Ready-made particle looks; every value stays editable afterwards.")
         
         self._combo_particle_emission = ArrowComboBox()
         self._combo_particle_emission.addItems(["Point", "Rectangle"])
@@ -3113,6 +3132,61 @@ class MainWindow(QMainWindow):
             item.emission_mode = "point"
             item.direction = 0.0
             item.color = QColor("orange")
+        elif preset == "Fire":
+            item.count = 400
+            item.speed = 90.0
+            item.size = 4.0
+            item.gravity_x = 0.0
+            item.gravity_y = -60.0
+            item.lifetime = 1.2
+            item.spread = 45.0
+            item.emission_mode = "rect"
+            item.direction = 270.0
+            item.color = QColor(255, 160, 40)
+        elif preset == "Bubbles":
+            item.count = 120
+            item.speed = 30.0
+            item.size = 8.0
+            item.gravity_x = 0.0
+            item.gravity_y = -40.0
+            item.lifetime = 6.0
+            item.spread = 30.0
+            item.emission_mode = "rect"
+            item.direction = 270.0
+            item.color = QColor(150, 220, 255, 180)
+        elif preset == "Confetti":
+            item.count = 300
+            item.speed = 120.0
+            item.size = 5.0
+            item.gravity_x = 0.0
+            item.gravity_y = 80.0
+            item.lifetime = 4.0
+            item.spread = 60.0
+            item.emission_mode = "rect"
+            item.direction = 90.0
+            item.color = QColor(255, 214, 90)
+        elif preset == "Sparkle":
+            item.count = 150
+            item.speed = 10.0
+            item.size = 2.5
+            item.gravity_x = 0.0
+            item.gravity_y = 0.0
+            item.lifetime = 1.5
+            item.spread = 360.0
+            item.emission_mode = "rect"
+            item.direction = 0.0
+            item.color = QColor(255, 255, 255)
+        elif preset == "Smoke":
+            item.count = 80
+            item.speed = 25.0
+            item.size = 14.0
+            item.gravity_x = 0.0
+            item.gravity_y = -15.0
+            item.lifetime = 8.0
+            item.spread = 90.0
+            item.emission_mode = "rect"
+            item.direction = 270.0
+            item.color = QColor(180, 180, 180, 120)
             
         self._sync_particles_to_ui(item)
 
@@ -4890,6 +4964,13 @@ class MainWindow(QMainWindow):
                     "strength": float(effect.strength()),
                     "color": effect.color().name(QColor.NameFormat.HexArgb),
                 }
+            if isinstance(effect, PulsingGlowEffect):
+                return {
+                    "type": "glow_pulse",
+                    "radius": float(getattr(effect, "_base_blur", effect.blurRadius())),
+                    "speed": float(getattr(effect, "speed", 1.0)),
+                    "color": effect.color().name(QColor.NameFormat.HexArgb),
+                }
             if isinstance(effect, QGraphicsDropShadowEffect):
                 offset = effect.offset()
                 dx = float(offset.x())
@@ -4927,6 +5008,13 @@ class MainWindow(QMainWindow):
                 params["offset"] = (float(offset[0]), float(offset[1]))
             except Exception:
                 params["offset"] = (0.0, 0.0)
+        if kind == "glow_pulse":
+            try:
+                params["speed"] = float(data.get("speed", 1.0))
+            except Exception:
+                params["speed"] = 1.0
+            item.set_effect("glow_pulse", params)
+            return
         if kind == "colorize":
             try:
                 strength = float(data.get("strength", 0.6))
@@ -5790,6 +5878,14 @@ class MainWindow(QMainWindow):
             if isinstance(eff, QGraphicsBlurEffect):
                 eff_type = "Blur"
                 radius = eff.blurRadius()
+            elif isinstance(eff, PulsingGlowEffect):
+                eff_type = "Glow Pulse"
+                radius = getattr(eff, "_base_blur", eff.blurRadius())
+                color = eff.color()
+                try:
+                    self._spin_effect_strength.setValue(float(eff.speed) * 50.0)
+                except Exception:
+                    pass
             elif isinstance(eff, QGraphicsDropShadowEffect):
                 offset = eff.offset()
                 if abs(offset.x()) < 0.1 and abs(offset.y()) < 0.1:
@@ -5886,6 +5982,11 @@ class MainWindow(QMainWindow):
             params["offset"] = (0.0, 0.0)
             params["color"] = getattr(self, "_current_effect_color", Qt.black)
             item.set_effect("glow", params)
+        elif eff_type == "Glow Pulse":
+            params["radius"] = self._spin_effect_radius.value()
+            params["speed"] = max(0.1, float(self._spin_effect_strength.value()) / 50.0)
+            params["color"] = getattr(self, "_current_effect_color", QColor("#00e5ff"))
+            item.set_effect("glow_pulse", params)
         elif eff_type == "Colorize":
             params["color"] = getattr(self, "_current_effect_color", QColor("#ffffff"))
             params["strength"] = max(0.0, min(1.0, float(self._spin_effect_strength.value()) / 100.0))
@@ -8691,17 +8792,9 @@ class MainWindow(QMainWindow):
             self._spin_glow_blur.setValue(float(style.glow_blur))
             self._chk_blur.setChecked(style.blur_enabled)
             self._spin_blur_radius.setValue(float(style.blur_radius))
-            if style.effect == TextEffect.RAINBOW:
-                self._combo_text_effect.setCurrentIndex(1)
-            elif style.effect == TextEffect.WAVE:
-                self._combo_text_effect.setCurrentIndex(2)
-            elif style.effect == TextEffect.TYPEWRITER:
-                self._combo_text_effect.setCurrentIndex(3)
-            elif style.effect == TextEffect.SCRAMBLE:
-                self._combo_text_effect.setCurrentIndex(4)
-            elif style.effect == TextEffect.PULSE:
-                self._combo_text_effect.setCurrentIndex(5)
-            else:
+            try:
+                self._combo_text_effect.setCurrentIndex(TEXT_EFFECT_ORDER.index(style.effect))
+            except ValueError:
                 self._combo_text_effect.setCurrentIndex(0)
             self._spin_effect_speed.setValue(float(style.effect_speed))
             self._spin_effect_amount.setValue(float(style.effect_amount))
@@ -8745,17 +8838,11 @@ class MainWindow(QMainWindow):
         font.setPointSize(int(self._spin_font_size.value()))
 
         fill_mode = FillMode.SOLID if self._combo_fill_mode.currentIndex() == 0 else FillMode.GRADIENT
-        effect = TextEffect.NONE
-        if self._combo_text_effect.currentIndex() == 1:
-            effect = TextEffect.RAINBOW
-        elif self._combo_text_effect.currentIndex() == 2:
-            effect = TextEffect.WAVE
-        elif self._combo_text_effect.currentIndex() == 3:
-            effect = TextEffect.TYPEWRITER
-        elif self._combo_text_effect.currentIndex() == 4:
-            effect = TextEffect.SCRAMBLE
-        elif self._combo_text_effect.currentIndex() == 5:
-            effect = TextEffect.PULSE
+        effect_index = int(self._combo_text_effect.currentIndex())
+        if 0 <= effect_index < len(TEXT_EFFECT_ORDER):
+            effect = TEXT_EFFECT_ORDER[effect_index]
+        else:
+            effect = TextEffect.NONE
         new_style = TextStyle(
             font=font,
             fill_mode=fill_mode,

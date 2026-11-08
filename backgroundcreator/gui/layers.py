@@ -23,6 +23,10 @@ class TextEffect(str, Enum):
     TYPEWRITER = "typewriter"
     SCRAMBLE = "scramble"
     PULSE = "pulse"
+    SHIMMER = "shimmer"
+    NEON = "neon"
+    GLITCH = "glitch"
+    LEVITATE = "levitate"
 
 
 class BlendMode(str, Enum):
@@ -61,6 +65,91 @@ def _parse_blend_mode(value: object) -> BlendMode:
         return BlendMode(str(value))
     except Exception:
         return BlendMode.NORMAL
+
+
+class PulsingGlowEffect(QGraphicsDropShadowEffect):
+    """Drop-shadow glow whose blur radius breathes over time."""
+
+    def __init__(self, parent: object | None = None) -> None:
+        super().__init__(parent)
+        self._time = 0.0
+        self._base_blur = 24.0
+        self.depth = 0.45
+        self.speed = 1.0
+
+    def configure(self, color: QColor, blur: float, speed: float) -> None:
+        self.setOffset(0.0, 0.0)
+        if isinstance(color, QColor) and color.isValid():
+            self.setColor(QColor(color))
+        self._base_blur = max(1.0, float(blur))
+        self.speed = max(0.05, float(speed))
+        self.setBlurRadius(float(self._base_blur))
+
+    def advance_time(self, dt: float) -> None:
+        self._time += max(0.0, float(dt))
+        phase = math.sin(self._time * self.speed * 2.0 * math.pi)
+        self.setBlurRadius(max(1.0, self._base_blur * (1.0 + self.depth * phase)))
+
+
+def _apply_layer_effect(target: object, name: str, params: dict) -> None:
+    """Apply a graphics effect to a layer item (image/video/particles)."""
+    if name == "blur":
+        radius = float(params.get("radius", 0.0))
+        if radius > 0:
+            eff = QGraphicsBlurEffect()
+            eff.setBlurRadius(radius)
+            target.setGraphicsEffect(eff)
+        else:
+            target.setGraphicsEffect(None)
+    elif name == "shadow" or name == "glow":
+        radius = float(params.get("radius", 0.0))
+        if radius > 0:
+            eff = QGraphicsDropShadowEffect()
+            eff.setBlurRadius(radius)
+            c = params.get("color")
+            if isinstance(c, QColor) and c.isValid():
+                eff.setColor(c)
+            elif isinstance(c, str):
+                eff.setColor(QColor(c))
+            offset = params.get("offset", (0, 0))
+            eff.setOffset(float(offset[0]), float(offset[1]))
+            target.setGraphicsEffect(eff)
+        else:
+            target.setGraphicsEffect(None)
+    elif name == "colorize":
+        eff = QGraphicsColorizeEffect()
+        try:
+            eff.setStrength(max(0.0, min(1.0, float(params.get("strength", 0.6)))))
+        except Exception:
+            eff.setStrength(0.6)
+        c = params.get("color")
+        if isinstance(c, QColor) and c.isValid():
+            eff.setColor(c)
+        elif isinstance(c, str):
+            parsed = QColor(c)
+            if parsed.isValid():
+                eff.setColor(parsed)
+        target.setGraphicsEffect(eff)
+    elif name == "glow_pulse":
+        try:
+            radius = float(params.get("radius", 24.0))
+        except Exception:
+            radius = 24.0
+        if radius <= 0.0:
+            target.setGraphicsEffect(None)
+            return
+        color = params.get("color")
+        if not isinstance(color, QColor):
+            color = QColor(str(color)) if color else QColor("#00e5ff")
+        try:
+            speed = float(params.get("speed", 1.0))
+        except Exception:
+            speed = 1.0
+        eff = PulsingGlowEffect()
+        eff.configure(color, radius, speed)
+        target.setGraphicsEffect(eff)
+    else:
+        target.setGraphicsEffect(None)
 
 
 @dataclass
@@ -170,6 +259,10 @@ class TextLayerItem(QGraphicsObject):
             TextEffect.TYPEWRITER,
             TextEffect.SCRAMBLE,
             TextEffect.PULSE,
+            TextEffect.SHIMMER,
+            TextEffect.NEON,
+            TextEffect.GLITCH,
+            TextEffect.LEVITATE,
         )
 
     def advance_time(self, dt: float) -> None:
@@ -276,6 +369,35 @@ class TextLayerItem(QGraphicsObject):
         
         return transform.map(base_path)
 
+    def _levitate_text_path(self) -> QPainterPath:
+        base = self._text_path()
+        speed = max(0.05, float(self._style.effect_speed))
+        amp = max(0.0, float(self._style.effect_amount))
+        offset = math.sin(float(self._anim_t) * speed * 2.0 * math.pi) * amp
+        return base.translated(0.0, float(offset))
+
+    def _glitch_text_path(self) -> QPainterPath:
+        path = QPainterPath()
+        metrics = QFontMetricsF(self._style.font)
+        speed = max(0.1, float(self._style.effect_speed))
+        amount = max(0.0, float(self._style.effect_amount))
+        rng = random.Random(int(float(self._anim_t) * 10.0 * speed))
+        x = 0.0
+        for ch in self._text:
+            ch_path = QPainterPath()
+            ch_path.addText(x, 0.0, self._style.font, ch)
+            if rng.random() < 0.18:
+                ch_path = ch_path.translated(
+                    rng.uniform(-amount * 0.12, amount * 0.12),
+                    rng.uniform(-amount * 0.25, amount * 0.25),
+                )
+            path.addPath(ch_path)
+            try:
+                x += float(metrics.horizontalAdvance(ch))
+            except Exception:
+                x += 0.0
+        return path
+
     def _get_effect_path(self) -> QPainterPath:
         if self._style.effect == TextEffect.WAVE:
             return self._wave_text_path()
@@ -285,6 +407,10 @@ class TextLayerItem(QGraphicsObject):
             return self._scramble_text_path()
         elif self._style.effect == TextEffect.PULSE:
             return self._pulse_text_path()
+        elif self._style.effect == TextEffect.GLITCH:
+            return self._glitch_text_path()
+        elif self._style.effect == TextEffect.LEVITATE:
+            return self._levitate_text_path()
         else:
             return self._text_path()
 
@@ -315,6 +441,21 @@ class TextLayerItem(QGraphicsObject):
                 painter.setBrush(Qt.NoBrush)
                 painter.drawPath(path)
 
+        if self._style.effect == TextEffect.NEON:
+            speed = max(0.1, float(self._style.effect_speed))
+            flicker = 0.72 + 0.28 * math.sin(float(self._anim_t) * speed * 7.0)
+            halo_blur = max(6.0, float(self._style.effect_amount))
+            core = QColor(self._style.color)
+            for width, alpha in ((halo_blur * 0.9, 90), (halo_blur * 0.5, 130)):
+                halo = QColor(core)
+                halo.setAlpha(max(0, min(255, int(alpha * flicker))))
+                pen = QPen(halo)
+                pen.setWidthF(max(1.0, float(width)))
+                pen.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPath(path)
+
         if self._style.shadow_enabled:
             shadow_color = QColor(self._style.shadow_color)
             shadow_color.setAlpha(max(0, min(255, shadow_color.alpha())))
@@ -336,7 +477,20 @@ class TextLayerItem(QGraphicsObject):
                 painter.drawPath(path)
             painter.restore()
 
-        if self._style.effect == TextEffect.RAINBOW:
+        if self._style.effect == TextEffect.GLITCH:
+            split = max(1.0, min(14.0, float(self._style.effect_amount) * 0.15))
+            painter.save()
+            painter.setCompositionMode(QPainter.CompositionMode_Plus)
+            painter.setPen(Qt.NoPen)
+            for tint, dx in ((QColor(255, 40, 90), -split), (QColor(0, 220, 255), split)):
+                tint.setAlpha(170)
+                painter.setBrush(tint)
+                painter.drawPath(QTransform.fromTranslate(float(dx), 0.0).map(path))
+            painter.restore()
+
+        if self._style.effect == TextEffect.NEON:
+            painter.setBrush(QColor(self._style.color).lighter(160))
+        elif self._style.effect == TextEffect.RAINBOW:
             grad = QLinearGradient(0.0, 0.0, rect.width(), 0.0)
             speed = max(0.0, float(self._style.effect_speed))
             phase = (float(self._anim_t) * speed * 0.15) % 1.0
@@ -356,6 +510,23 @@ class TextLayerItem(QGraphicsObject):
 
         painter.setPen(Qt.NoPen)
         painter.drawPath(path)
+
+        if self._style.effect == TextEffect.SHIMMER:
+            speed = max(0.05, float(self._style.effect_speed))
+            band = max(30.0, rect.width() * 0.28)
+            span = rect.width() + band
+            pos = ((float(self._anim_t) * speed * 0.45) % 1.0) * span - band
+            shine = QLinearGradient(float(pos), 0.0, float(pos + band), 0.0)
+            shine.setColorAt(0.0, QColor(255, 255, 255, 0))
+            shine.setColorAt(0.5, QColor(255, 255, 255, 190))
+            shine.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.save()
+            painter.setClipPath(path)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(shine)
+            painter.drawRect(rect)
+            painter.restore()
+
         painter.restore()
 
 
@@ -384,45 +555,7 @@ class ImageLayerItem(QGraphicsPixmapItem):
         self.update()
 
     def set_effect(self, name: str, params: dict) -> None:
-        if name == "blur":
-            radius = float(params.get("radius", 0.0))
-            if radius > 0:
-                eff = QGraphicsBlurEffect()
-                eff.setBlurRadius(radius)
-                self.setGraphicsEffect(eff)
-            else:
-                self.setGraphicsEffect(None)
-        elif name == "shadow" or name == "glow":
-            radius = float(params.get("radius", 0.0))
-            if radius > 0:
-                eff = QGraphicsDropShadowEffect()
-                eff.setBlurRadius(radius)
-                c = params.get("color")
-                if isinstance(c, QColor) and c.isValid():
-                    eff.setColor(c)
-                elif isinstance(c, str):
-                    eff.setColor(QColor(c))
-                offset = params.get("offset", (0, 0))
-                eff.setOffset(float(offset[0]), float(offset[1]))
-                self.setGraphicsEffect(eff)
-            else:
-                self.setGraphicsEffect(None)
-        elif name == "colorize":
-            eff = QGraphicsColorizeEffect()
-            try:
-                eff.setStrength(max(0.0, min(1.0, float(params.get("strength", 0.6)))))
-            except Exception:
-                eff.setStrength(0.6)
-            c = params.get("color")
-            if isinstance(c, QColor) and c.isValid():
-                eff.setColor(c)
-            elif isinstance(c, str):
-                parsed = QColor(c)
-                if parsed.isValid():
-                    eff.setColor(parsed)
-            self.setGraphicsEffect(eff)
-        else:
-            self.setGraphicsEffect(None)
+        _apply_layer_effect(self, name, params)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.save()
@@ -453,45 +586,7 @@ class VideoLayerItem(QGraphicsVideoItem):
         self.update()
 
     def set_effect(self, name: str, params: dict) -> None:
-        if name == "blur":
-            radius = float(params.get("radius", 0.0))
-            if radius > 0:
-                eff = QGraphicsBlurEffect()
-                eff.setBlurRadius(radius)
-                self.setGraphicsEffect(eff)
-            else:
-                self.setGraphicsEffect(None)
-        elif name == "shadow" or name == "glow":
-            radius = float(params.get("radius", 0.0))
-            if radius > 0:
-                eff = QGraphicsDropShadowEffect()
-                eff.setBlurRadius(radius)
-                c = params.get("color")
-                if isinstance(c, QColor) and c.isValid():
-                    eff.setColor(c)
-                elif isinstance(c, str):
-                    eff.setColor(QColor(c))
-                offset = params.get("offset", (0, 0))
-                eff.setOffset(float(offset[0]), float(offset[1]))
-                self.setGraphicsEffect(eff)
-            else:
-                self.setGraphicsEffect(None)
-        elif name == "colorize":
-            eff = QGraphicsColorizeEffect()
-            try:
-                eff.setStrength(max(0.0, min(1.0, float(params.get("strength", 0.6)))))
-            except Exception:
-                eff.setStrength(0.6)
-            c = params.get("color")
-            if isinstance(c, QColor) and c.isValid():
-                eff.setColor(c)
-            elif isinstance(c, str):
-                parsed = QColor(c)
-                if parsed.isValid():
-                    eff.setColor(parsed)
-            self.setGraphicsEffect(eff)
-        else:
-            self.setGraphicsEffect(None)
+        _apply_layer_effect(self, name, params)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.save()
@@ -553,45 +648,7 @@ class ParticleLayerItem(QGraphicsItem):
         self.update()
 
     def set_effect(self, name: str, params: dict) -> None:
-        if name == "blur":
-            radius = float(params.get("radius", 0.0))
-            if radius > 0:
-                eff = QGraphicsBlurEffect()
-                eff.setBlurRadius(radius)
-                self.setGraphicsEffect(eff)
-            else:
-                self.setGraphicsEffect(None)
-        elif name == "shadow" or name == "glow":
-            radius = float(params.get("radius", 0.0))
-            if radius > 0:
-                eff = QGraphicsDropShadowEffect()
-                eff.setBlurRadius(radius)
-                c = params.get("color")
-                if isinstance(c, QColor) and c.isValid():
-                    eff.setColor(c)
-                elif isinstance(c, str):
-                    eff.setColor(QColor(c))
-                offset = params.get("offset", (0, 0))
-                eff.setOffset(float(offset[0]), float(offset[1]))
-                self.setGraphicsEffect(eff)
-            else:
-                self.setGraphicsEffect(None)
-        elif name == "colorize":
-            eff = QGraphicsColorizeEffect()
-            try:
-                eff.setStrength(max(0.0, min(1.0, float(params.get("strength", 0.6)))))
-            except Exception:
-                eff.setStrength(0.6)
-            c = params.get("color")
-            if isinstance(c, QColor) and c.isValid():
-                eff.setColor(c)
-            elif isinstance(c, str):
-                parsed = QColor(c)
-                if parsed.isValid():
-                    eff.setColor(parsed)
-            self.setGraphicsEffect(eff)
-        else:
-            self.setGraphicsEffect(None)
+        _apply_layer_effect(self, name, params)
 
     def boundingRect(self) -> QRectF:
         return QRectF(0, 0, self._width, self._height)

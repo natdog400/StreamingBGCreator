@@ -19,7 +19,7 @@ os.environ.setdefault("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="qt-runtime-"))
 try:
     from PySide6.QtGui import QColor
 
-    from backgroundcreator.gui.layers import ParticleLayerItem, TextLayerItem
+    from backgroundcreator.gui.layers import ParticleLayerItem, PulsingGlowEffect, TextEffect, TextLayerItem
     from backgroundcreator.gui.main_window import MainWindow
     from backgroundcreator.layout.layout_io import save_layout_file
     from PySide6.QtWidgets import (
@@ -222,6 +222,73 @@ class GuiSmokeTest(unittest.TestCase):
         self.window._sync_text_to_ui(item)
         shown = self.window._spin_font_size.value()
         self.assertEqual(shown, 30)  # 40px at 96 DPI
+
+    def test_every_animated_text_effect_renders(self) -> None:
+        """Each new text effect must animate, render and keep its geometry."""
+        import dataclasses
+
+        from PySide6.QtGui import QImage, QPainter
+
+        scene = self.window._current_scene()
+        item = scene.add_text_layer()
+        item.set_text("Effects")
+        base = item.style()
+        for effect in (TextEffect.SHIMMER, TextEffect.NEON, TextEffect.GLITCH, TextEffect.LEVITATE):
+            item.set_style(dataclasses.replace(base, effect=effect))
+            self.assertTrue(item.needs_animation(), f"{effect.value} does not animate")
+            item.advance_time(0.3)
+            self.assertGreater(item.boundingRect().width(), 0.0)
+            image = QImage(240, 120, QImage.Format_ARGB32)
+            image.fill(0)
+            painter = QPainter(image)
+            try:
+                item.paint(painter, None)
+            finally:
+                painter.end()
+
+    def test_new_text_effect_serializes(self) -> None:
+        import dataclasses
+
+        text = TextLayerItem("Neon", 11)
+        text.set_style(dataclasses.replace(text.style(), effect=TextEffect.NEON))
+        self.window._add_layer_item(text, "Neon text")
+        blob = json.dumps(self.window._serialize_layout())
+        self.assertIn('"effect": "neon"', blob)
+
+    def test_particle_presets_apply(self) -> None:
+        particles = ParticleLayerItem(300.0, 200.0)
+        self.window._add_layer_item(particles, "Preset particles")
+        particles.setSelected(True)
+        names = {
+            self.window._combo_particle_preset.itemText(i): i
+            for i in range(self.window._combo_particle_preset.count())
+        }
+        for name in ("Fire", "Bubbles", "Confetti", "Sparkle", "Smoke"):
+            self.assertIn(name, names, f"{name} preset missing")
+            self.window._combo_particle_preset.setCurrentIndex(names[name])
+            self.window._apply_particle_preset()
+            self.assertGreater(particles.count, 0, f"{name} preset left no particles")
+
+    def test_glow_pulse_effect_roundtrip(self) -> None:
+        particles = ParticleLayerItem(200.0, 150.0)
+        self.window._add_layer_item(particles, "Pulsing particles")
+        particles.set_effect("glow_pulse", {"radius": 30.0, "speed": 1.5, "color": QColor("#ff00ff")})
+        effect = particles.graphicsEffect()
+        self.assertIsInstance(effect, PulsingGlowEffect)
+        first = effect.blurRadius()
+        effect.advance_time(0.25)
+        self.assertNotEqual(first, effect.blurRadius(), "pulsing glow did not animate")
+
+        path = str(Path(self.tmp) / "pulse.json")
+        save_layout_file(path, self.window._serialize_layout())
+        self.window._clear_monitor_layout(0)
+        self.assertTrue(self.window._load_layout_from_path(path))
+        restored = [
+            it for it in self.window._monitor_states[0].items.values()
+            if isinstance(it, ParticleLayerItem)
+        ]
+        self.assertTrue(restored, "pulsing particle layer was not restored")
+        self.assertIsInstance(restored[0].graphicsEffect(), PulsingGlowEffect)
 
 
 if __name__ == "__main__":
